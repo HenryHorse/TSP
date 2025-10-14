@@ -11,6 +11,7 @@
 #include <utility>
 #include <algorithm>
 #include <random>
+#include <fstream>
 #include "multifragment.h"
 
 
@@ -126,14 +127,18 @@ std::vector<std::pair<int, int>> multifragment(ANNpointArray pts, int numPts) {
             }
         }
     }
+
+    // close the cycle
+    const auto& finalPath = clusters.begin()->second;
+    edges.emplace_back(finalPath.back(), finalPath.front());
     return edges;
 }
 
 int main() {
     int seed = 1337;
     std::mt19937 gen(seed);
-    std::uniform_real_distribution<> dist(0, 10);
-    int numPts = 8;
+    std::uniform_real_distribution<> dist(0, 100);
+    int numPts = 100;
     ANNpointArray pts = annAllocPts(numPts, DIMENSIONS);
 
     for (int i = 0; i < numPts; i++) {
@@ -155,6 +160,21 @@ int main() {
     for (auto& e : tourEdges) {
         std::cout << e.first << " - " << e.second << "\n";
     }
+
+
+
+    std::ofstream out("output.txt");
+    out << numPts << "\n";
+    for (int i = 0; i < numPts; i++) {
+        out << pts[i][0] << " " << pts[i][1] << "\n";
+    }
+
+    out << tourEdges.size() << "\n";
+    for (auto& e : tourEdges) {
+        out << e.first << " " << e.second << "\n";
+    }
+    out.close();
+
     annDeallocPts(pts);
     return 0;
 }

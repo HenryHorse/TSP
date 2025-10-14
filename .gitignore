@@ -1,0 +1,58 @@
+# CMake build directories
+cmake-build-*/
+build/
+cmake-build-debug/
+cmake-build-release/
+
+# Build outputs
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+*.out
+multifragment
+TSP
+tests
+
+# IDE directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Output files
+output.txt
+*.log
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Matplotlib cache
+.matplotlib/
+
+# Testing
+Testing/
+CTestTestfile.cmake
+
+# Documentation
+*.pdf
+*.aux
+*.toc
