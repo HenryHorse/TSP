@@ -36,6 +36,9 @@ add_executable(tests
         multifragment.cpp
         multifragment.h)
 
+# Define TESTING macro for tests to exclude main() from multifragment.cpp
+target_compile_definitions(tests PRIVATE TESTING)
+
 # Link Google Test and ANN library to tests
 target_link_libraries(tests GTest::gtest_main ANN)
 
