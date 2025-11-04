@@ -130,7 +130,8 @@ TEST(MultifragmentTest, SmallTour) {
     pts[2][0] = 1; pts[2][1] = 1;
     pts[3][0] = 0; pts[3][1] = 1;
 
-    auto edges = multifragment(pts, numPts);
+    // Use k=3 and eps=0.0 for testing
+    auto edges = multifragment(pts, numPts, 3, 0.0);
 
     // Should have exactly numPts edges (forming a cycle)
     EXPECT_EQ(edges.size(), numPts);
