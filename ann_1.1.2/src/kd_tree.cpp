@@ -212,6 +212,7 @@ ANNkd_tree::~ANNkd_tree()				// tree destructor
 	if (pidx != NULL) delete [] pidx;
 	if (bnd_box_lo != NULL) annDeallocPt(bnd_box_lo);
 	if (bnd_box_hi != NULL) annDeallocPt(bnd_box_hi);
+	if (deleted != NULL) delete [] deleted;
 }
 
 //----------------------------------------------------------------------
@@ -266,6 +267,14 @@ void ANNkd_tree::SkeletonTree(			// construct skeleton tree
 	}
 
 	bnd_box_lo = bnd_box_hi = NULL;		// bounding box is nonexistent
+
+	// Initialize deletion tracking
+	deleted = new ANNbool[n];
+	for (int i = 0; i < n; i++) {
+		deleted[i] = ANNfalse;			// initially no points are deleted
+	}
+	n_deleted = 0;
+
 	if (KD_TRIVIAL == NULL)				// no trivial leaf node yet?
 		KD_TRIVIAL = new ANNkd_leaf(0, IDX_TRIVIAL);	// allocate it
 }

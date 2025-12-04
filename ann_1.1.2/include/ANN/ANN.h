@@ -712,6 +712,8 @@ protected:
 	ANNkd_ptr		root;				// root of kd-tree
 	ANNpoint		bnd_box_lo;			// bounding box low point
 	ANNpoint		bnd_box_hi;			// bounding box high point
+	ANNbool*		deleted;			// deletion flags for points
+	int				n_deleted;			// number of deleted points
 
 	void SkeletonTree(					// construct skeleton tree
 		int				n,				// number of points
@@ -779,6 +781,18 @@ public:
 								
 	virtual void getStats(				// compute tree statistics
 		ANNkdStats&		st);			// the statistics (modified)
+
+	void deletePoint(int idx)			// mark a point as deleted
+		{ if (idx >= 0 && idx < n_pts && !deleted[idx]) { deleted[idx] = ANNtrue; n_deleted++; } }
+
+	void undeletePoint(int idx)			// unmark a point as deleted
+		{ if (idx >= 0 && idx < n_pts && deleted[idx]) { deleted[idx] = ANNfalse; n_deleted--; } }
+
+	ANNbool isDeleted(int idx)			// check if point is deleted
+		{ return (idx >= 0 && idx < n_pts) ? deleted[idx] : ANNtrue; }
+
+	int nDeleted()						// return number of deleted points
+		{ return n_deleted; }
 };								
 
 //----------------------------------------------------------------------

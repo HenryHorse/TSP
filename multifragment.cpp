@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <random>
 #include <fstream>
+#include <chrono>
 #include <iostream>
 #include "multifragment.h"
 
@@ -30,32 +31,41 @@ double euclidean(const ANNpoint& a, const ANNpoint& b) {
 
 // Implementation of Algorithm 1: SNN Query using k-ANN Data Structure
 // This implements the three-way Soft Nearest-Neighbor query from the paper
-SNNResult snnQuery(ANNpoint q, ANNkd_tree* kdTree, int k, double epsilon) {
+SNNResult snnQuery(ANNpoint q, ANNbd_tree* bdTree, int k, double epsilon) {
     SNNResult result;
 
+    // Cap k at the number of non-deleted points
+    int non_deleted = bdTree->nPoints() - bdTree->nDeleted();
+    int actual_k = std::min(k, non_deleted);
+
+    if (actual_k <= 0) {
+        result.isHardAnswer = false;
+        return result;
+    }
+
     // Allocate arrays for k-NN search results
-    ANNidxArray nn_idx = new ANNidx[k];
-    ANNdistArray dists = new ANNdist[k];
+    ANNidxArray nn_idx = new ANNidx[actual_k];
+    ANNdistArray dists = new ANNdist[actual_k];
 
     // Call k-ANN to get k nearest neighbors
-    kdTree->annkSearch(q, k, nn_idx, dists, epsilon);
+    bdTree->annkSearch(q, actual_k, nn_idx, dists, epsilon);
 
     // Distance to true nearest neighbor (first result)
     double d_q_pstar = std::sqrt(dists[0]);
 
     // Find three mutually close points (a triple where all pairwise distances < d_q_pstar)
-    ANNpointArray pts = kdTree->thePoints();
+    ANNpointArray pts = bdTree->thePoints();
 
     bool foundTriple = false;
     int tripleIdx1 = -1, tripleIdx2 = -1, tripleIdx3 = -1;
 
-    // Check all triples among p1...pk
-    for (int i = 0; i < k && !foundTriple; i++) {
-        for (int j = i + 1; j < k && !foundTriple; j++) {
+    // Check all triples among p1...p(actual_k) - NOTE: using actual_k not k!
+    for (int i = 0; i < actual_k && !foundTriple; i++) {
+        for (int j = i + 1; j < actual_k && !foundTriple; j++) {
             double dist_ij = euclidean(pts[nn_idx[i]], pts[nn_idx[j]]);
             if (dist_ij >= d_q_pstar) continue;
 
-            for (int l = j + 1; l < k; l++) {
+            for (int l = j + 1; l < actual_k; l++) {
                 double dist_il = euclidean(pts[nn_idx[i]], pts[nn_idx[l]]);
                 double dist_jl = euclidean(pts[nn_idx[j]], pts[nn_idx[l]]);
 
@@ -112,131 +122,114 @@ double distanceBetweenClusters(
     return minDist;
 }
 
-// Helper: Map a point index to its cluster and validate it's a viable candidate
-// Returns -1 if point is invalid, same cluster, or not active
-int getValidCandidateCluster(
-    int pointIdx,
-    int myClusterID,
-    const std::unordered_map<int, int>& pointToCluster,
-    const std::unordered_map<int, std::list<int>>& clusters,
-    const std::set<int>& active
-) {
-    // Validate point index
-    if (pointIdx == -1) return -1;
-
-    // Map point to its cluster
-    auto it = pointToCluster.find(pointIdx);
-    if (it == pointToCluster.end()) return -1;
-
-    int candidateCluster = it->second;
-
-    // Filter out invalid candidates
-    if (candidateCluster == NULL_CLUSTER) return -1;          // Intermediate point (not an endpoint)
-    if (candidateCluster == myClusterID) return -1;           // Same cluster
-    if (active.count(candidateCluster) == 0) return -1;       // Not active
-    if (clusters.find(candidateCluster) == clusters.end()) return -1;  // Doesn't exist
-
-    return candidateCluster;
-}
-
-// Helper: Update best cluster if candidate is better
-void updateBestCluster(
-    int candidateCluster,
-    const std::list<int>& myPath,
-    const std::unordered_map<int, std::list<int>>& clusters,
-    ANNpointArray pts,
-    int& bestClusterID,
-    double& bestDistance
-) {
-    if (candidateCluster == -1) return;
-
-    const auto& candidatePath = clusters.at(candidateCluster);
-    double dist = distanceBetweenClusters(myPath, candidatePath, pts);
-
-    if (dist < bestDistance) {
-        bestDistance = dist;
-        bestClusterID = candidateCluster;
-    }
-}
-
-// Modified version using SNN query for finding nearest cluster
-// This queries from the cluster endpoints using the k-d tree
+// Implementation of SNN query for paths (Algorithm 2 from paper)
+// This implements the path-level SNN query using point-level SNN queries
 int findNearestCluster(
     int clusterID,
     const std::unordered_map<int, std::list<int>>& clusters,
     const std::set<int>& active,
     ANNpointArray pts,
-    ANNkd_tree* kdTree,
+    ANNbd_tree* bdTree,
     const std::unordered_map<int, int>& pointToCluster,
     int k,
     double eps
 ) {
     const auto &path = clusters.at(clusterID);
-    int a0 = path.front(), a1 = path.back();
+    int q1 = path.front(), q2 = path.back();
 
-    // Query from both endpoints of the cluster
-    SNNResult result1 = snnQuery(pts[a0], kdTree, k, eps);
-    SNNResult result2 = (a0 != a1) ? snnQuery(pts[a1], kdTree, k, eps) : result1;
-
-    double bestDistance = std::numeric_limits<double>::infinity();
-    int bestClusterID = -1;
-
-    // Algorithm 2: Process results based on hard/soft answers from both endpoints
-    if (result1.isHardAnswer && result2.isHardAnswer) {
-        // Both endpoints got hard answers - check both candidates
-        int candidate1 = getValidCandidateCluster(result1.nearestNeighborIdx, clusterID, pointToCluster, clusters, active);
-        int candidate2 = getValidCandidateCluster(result2.nearestNeighborIdx, clusterID, pointToCluster, clusters, active);
-        updateBestCluster(candidate1, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate2, path, clusters, pts, bestClusterID, bestDistance);
-    }
-    else if (!result1.isHardAnswer && !result2.isHardAnswer) {
-        // Both got soft answers - check all six points from both triples
-        int candidate1 = getValidCandidateCluster(result1.softPair1, clusterID, pointToCluster, clusters, active);
-        int candidate2 = getValidCandidateCluster(result1.softPair2, clusterID, pointToCluster, clusters, active);
-        int candidate3 = getValidCandidateCluster(result1.softPair3, clusterID, pointToCluster, clusters, active);
-        int candidate4 = getValidCandidateCluster(result2.softPair1, clusterID, pointToCluster, clusters, active);
-        int candidate5 = getValidCandidateCluster(result2.softPair2, clusterID, pointToCluster, clusters, active);
-        int candidate6 = getValidCandidateCluster(result2.softPair3, clusterID, pointToCluster, clusters, active);
-        updateBestCluster(candidate1, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate2, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate3, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate4, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate5, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate6, path, clusters, pts, bestClusterID, bestDistance);
-    }
-    else if (!result1.isHardAnswer) {
-        // result1 soft, result2 hard - check triple from result1 and hard answer from result2
-        int candidate1 = getValidCandidateCluster(result1.softPair1, clusterID, pointToCluster, clusters, active);
-        int candidate2 = getValidCandidateCluster(result1.softPair2, clusterID, pointToCluster, clusters, active);
-        int candidate3 = getValidCandidateCluster(result1.softPair3, clusterID, pointToCluster, clusters, active);
-        int candidate4 = getValidCandidateCluster(result2.nearestNeighborIdx, clusterID, pointToCluster, clusters, active);
-        updateBestCluster(candidate1, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate2, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate3, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate4, path, clusters, pts, bestClusterID, bestDistance);
-    }
-    else {
-        // result1 hard, result2 soft - check hard answer from result1 and triple from result2
-        int candidate1 = getValidCandidateCluster(result1.nearestNeighborIdx, clusterID, pointToCluster, clusters, active);
-        int candidate2 = getValidCandidateCluster(result2.softPair1, clusterID, pointToCluster, clusters, active);
-        int candidate3 = getValidCandidateCluster(result2.softPair2, clusterID, pointToCluster, clusters, active);
-        int candidate4 = getValidCandidateCluster(result2.softPair3, clusterID, pointToCluster, clusters, active);
-        updateBestCluster(candidate1, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate2, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate3, path, clusters, pts, bestClusterID, bestDistance);
-        updateBestCluster(candidate4, path, clusters, pts, bestClusterID, bestDistance);
+    // Temporarily delete our own endpoints to avoid self-matches
+    bdTree->deletePoint(q1);
+    if (q1 != q2) {
+        bdTree->deletePoint(q2);
     }
 
-    // Fallback: if SNN didn't find a valid cluster, do linear search
-    if (bestClusterID == -1) {
-        for (int otherCluster : active) {
-            if (otherCluster == clusterID) continue;
-            const auto& otherPath = clusters.at(otherCluster);
-            double dist = distanceBetweenClusters(path, otherPath, pts);
-            if (dist < bestDistance) {
-                bestDistance = dist;
-                bestClusterID = otherCluster;
+    // Query S with q1 and q2
+    SNNResult answer1 = snnQuery(pts[q1], bdTree, k, eps);
+    SNNResult answer2;
+    if (q1 != q2) {
+        answer2 = snnQuery(pts[q2], bdTree, k, eps);
+    } else {
+        answer2 = answer1;
+    }
+
+    // Restore our endpoints
+    bdTree->undeletePoint(q1);
+    if (q1 != q2) {
+        bdTree->undeletePoint(q2);
+    }
+
+    // Collect candidate clusters from the SNN results
+    std::set<int> candidateClusters;
+
+    // Case 1: Both answers are hard
+    if (answer1.isHardAnswer && answer2.isHardAnswer) {
+        int p1 = answer1.nearestNeighborIdx;
+        int p2 = answer2.nearestNeighborIdx;
+
+        auto it1 = pointToCluster.find(p1);
+        auto it2 = pointToCluster.find(p2);
+
+        if (it1 != pointToCluster.end() && it1->second != NULL_CLUSTER && it1->second != clusterID) {
+            candidateClusters.insert(it1->second);
+        }
+        if (it2 != pointToCluster.end() && it2->second != NULL_CLUSTER && it2->second != clusterID) {
+            candidateClusters.insert(it2->second);
+        }
+    }
+    // Case 2: One hard, one soft
+    else if (answer1.isHardAnswer != answer2.isHardAnswer) {
+        // Add cluster from hard answer
+        int hardIdx = answer1.isHardAnswer ? answer1.nearestNeighborIdx : answer2.nearestNeighborIdx;
+        auto it = pointToCluster.find(hardIdx);
+        if (it != pointToCluster.end() && it->second != NULL_CLUSTER && it->second != clusterID) {
+            candidateClusters.insert(it->second);
+        }
+
+        // Add clusters from soft answer (the triple)
+        std::vector<int> softIndices;
+        if (answer1.isHardAnswer) {
+            softIndices = {answer2.softPair1, answer2.softPair2, answer2.softPair3};
+        } else {
+            softIndices = {answer1.softPair1, answer1.softPair2, answer1.softPair3};
+        }
+
+        for (int idx : softIndices) {
+            auto it = pointToCluster.find(idx);
+            if (it != pointToCluster.end() && it->second != NULL_CLUSTER && it->second != clusterID) {
+                candidateClusters.insert(it->second);
             }
+        }
+    }
+    // Case 3: Both soft
+    else {
+        // Add all clusters from both triples
+        std::vector<int> allIndices = {
+            answer1.softPair1, answer1.softPair2, answer1.softPair3,
+            answer2.softPair1, answer2.softPair2, answer2.softPair3
+        };
+
+        for (int idx : allIndices) {
+            auto it = pointToCluster.find(idx);
+            if (it != pointToCluster.end() && it->second != NULL_CLUSTER && it->second != clusterID) {
+                candidateClusters.insert(it->second);
+            }
+        }
+    }
+
+    // Find the closest cluster among candidates
+    int bestClusterID = -1;
+    double bestDistance = std::numeric_limits<double>::infinity();
+
+    for (int candidateID : candidateClusters) {
+        // Verify cluster still exists
+        if (clusters.find(candidateID) == clusters.end()) {
+            continue;
+        }
+
+        double dist = distanceBetweenClusters(path, clusters.at(candidateID), pts);
+        if (dist < bestDistance) {
+            bestDistance = dist;
+            bestClusterID = candidateID;
         }
     }
 
@@ -245,7 +238,8 @@ int findNearestCluster(
 
 std::list<int> mergeClusters(int a, int b, std::unordered_map<int, std::list<int>>& clusters,
                              ANNpointArray pts, std::vector<std::pair<int, int>>& edges,
-                             std::unordered_map<int, int>& pointToCluster, int newClusterID) {
+                             std::unordered_map<int, int>& pointToCluster, int newClusterID,
+                             ANNbd_tree* bdTree) {
     auto& pathA = clusters[a];
     auto& pathB = clusters[b];
 
@@ -282,17 +276,27 @@ std::list<int> mergeClusters(int a, int b, std::unordered_map<int, std::list<int
     // O(1) splice operation to merge the lists
     pathA.splice(pathA.end(), pathB);
 
-    // Mark all intermediate points as NULL_CLUSTER (O(n) but only needs to happen once per point)
-    // Only the two endpoints of the merged cluster remain valid for queries
+    // Determine the new endpoints after merging
+    int newEndpoint0 = pathA.front();
+    int newEndpoint1 = pathA.back();
+
+    // Mark all intermediate points as NULL_CLUSTER and delete them from the tree
+    // Skip the endpoints - they should remain active
     auto it = pathA.begin();
     while (it != pathA.end()) {
-        pointToCluster[*it] = NULL_CLUSTER;
+        int pointIdx = *it;
+        pointToCluster[pointIdx] = NULL_CLUSTER;
+
+        // Only delete if it's not one of the new endpoints
+        if (pointIdx != newEndpoint0 && pointIdx != newEndpoint1) {
+            bdTree->deletePoint(pointIdx);
+        }
         ++it;
     }
 
-    // Update only the two endpoints to the new cluster ID (O(1))
-    pointToCluster[pathA.front()] = newClusterID;
-    pointToCluster[pathA.back()] = newClusterID;
+    // Update only the two endpoints to the new cluster ID
+    pointToCluster[newEndpoint0] = newClusterID;
+    pointToCluster[newEndpoint1] = newClusterID;
 
     return pathA;
 }
@@ -312,70 +316,69 @@ std::vector<std::pair<int, int>> multifragment(ANNpointArray pts, int numPts, in
     std::vector<std::pair<int, int>> edges;
     int nextId = numPts;
 
-    // Build initial k-d tree with all points
-    ANNkd_tree* kdTree = new ANNkd_tree(pts, numPts, DIMENSIONS);
+    // Build initial bd-tree with all points
+    ANNbd_tree* bdTree = new ANNbd_tree(pts, numPts, DIMENSIONS);
 
+    int iteration = 0;
     while (active.size() > 1) {
-        // Stack now stores pairs: (cluster, its nearest neighbor)
-        std::vector<std::pair<int, int>> stack;
+        if (iteration % 10 == 0) {
+            std::cout << "Iter " << iteration << ": " << active.size() << " clusters active" << std::endl;
+        }
+        iteration++;
+
+        // Stack stores cluster IDs forming a nearest-neighbor chain
+        std::vector<int> stack;
 
         // Start with an arbitrary cluster
-        int startCluster = *active.begin();
-        int startNN = findNearestCluster(startCluster, clusters, active, pts, kdTree, pointToCluster, k, eps);
-        stack.push_back({startCluster, startNN});
+        int currentCluster = *active.begin();
+        stack.push_back(currentCluster);
 
+        // Build the nearest-neighbor chain until we find a cycle
         while (true) {
-            // Get the nearest neighbor from the top pair
-            int currentCluster = stack.back().second;
-            int currentNN = findNearestCluster(currentCluster, clusters, active, pts, kdTree, pointToCluster, k, eps);
+            int nearestCluster = findNearestCluster(currentCluster, clusters, active, pts, bdTree, pointToCluster, k, eps);
 
-            // Check if we have a mutual nearest neighbor relationship (cycle of length 2)
-            // currentCluster's NN is currentNN, check if currentNN's NN is currentCluster
-            if (currentNN == stack.back().first) {
-                // Found a cycle: currentCluster <-> currentNN (mutual nearest neighbors)
-                // Merge currentCluster and currentNN
-                auto merged = mergeClusters(currentCluster, currentNN, clusters, pts, edges, pointToCluster, nextId);
+            if (nearestCluster == -1) {
+                // No valid nearest neighbor found - shouldn't happen but handle gracefully
+                std::cerr << "Warning: No nearest neighbor found for cluster " << currentCluster << std::endl;
+                break;
+            }
+
+            // Check if nearestCluster is already in the stack (found a cycle)
+            bool foundCycle = false;
+            for (int clusterInStack : stack) {
+                if (clusterInStack == nearestCluster) {
+                    foundCycle = true;
+                    break;
+                }
+            }
+
+            if (foundCycle) {
+                // Found a cycle! Merge currentCluster and nearestCluster
+                auto merged = mergeClusters(currentCluster, nearestCluster, clusters, pts, edges, pointToCluster, nextId, bdTree);
 
                 active.erase(currentCluster);
-                active.erase(currentNN);
+                active.erase(nearestCluster);
                 clusters.erase(currentCluster);
-                clusters.erase(currentNN);
+                clusters.erase(nearestCluster);
                 clusters[nextId] = std::move(merged);
                 active.insert(nextId);
 
-                // Remove pairs involving the merged clusters from the stack
-                // The top pair was (currentNN, currentCluster) and needs to be removed
-                stack.pop_back();
-
-                if (!stack.empty()) {
-                    // The previous pair (X, currentNN) also references a deleted cluster (currentNN)
-                    int prevCluster = stack.back().first;
-                    stack.pop_back();  // Remove (X, currentNN)
-
-                    // Continue from prevCluster, requerying its nearest neighbor
-                    int newNN = findNearestCluster(prevCluster, clusters, active, pts, kdTree, pointToCluster, k, eps);
-                    stack.push_back({prevCluster, newNN});
-                } else {
-                    // Stack is empty, start fresh with the merged cluster
-                    int newNN = findNearestCluster(nextId, clusters, active, pts, kdTree, pointToCluster, k, eps);
-                    stack.push_back({nextId, newNN});
-                }
-
                 nextId++;
-                break;
+                break;  // Start a new chain
             } else {
-                // No cycle yet, push the new pair onto the stack
-                stack.push_back({currentCluster, currentNN});
+                // Continue the chain
+                stack.push_back(nearestCluster);
+                currentCluster = nearestCluster;
             }
         }
     }
 
-    // Close the cycle
+    // Close the tour
     const auto& finalPath = clusters.begin()->second;
     edges.emplace_back(finalPath.back(), finalPath.front());
 
     // Clean up
-    delete kdTree;
+    delete bdTree;
 
     return edges;
 }
@@ -407,6 +410,8 @@ int main() {
               << ", epsilon=" << epsilon << "\n\n";
 
     auto tourEdges = multifragment(pts, numPts, k, epsilon);
+
+    std::cout << "\nMultifragment complete!" << std::endl;
 
     std::cout << "Multifragment tour edges:\n";
     for (auto& e : tourEdges) {

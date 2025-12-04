@@ -12,18 +12,18 @@ FetchContent_Declare(
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-include_directories(${PROJECT_SOURCE_DIR}/include)
-
-add_library(ANN STATIC IMPORTED)
-set_target_properties(ANN PROPERTIES
-        IMPORTED_LOCATION ${PROJECT_SOURCE_DIR}/lib/libANN.a
-        INTERFACE_INCLUDE_DIRECTORIES ${PROJECT_SOURCE_DIR}/include
-)
+# Build ANN library from source
+file(GLOB ANN_SOURCES "ann_1.1.2/src/*.cpp")
+add_library(ANN STATIC ${ANN_SOURCES})
+target_include_directories(ANN PUBLIC ${PROJECT_SOURCE_DIR}/ann_1.1.2/include)
 
 add_executable(multifragment multifragment.cpp multifragment.h)
 
 # Link ANN to your executable
 target_link_libraries(multifragment ANN)
+
+add_executable(test_deletion test_deletion.cpp)
+target_link_libraries(test_deletion ANN)
 
 add_executable(TSP
         random_points.cpp

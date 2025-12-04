@@ -81,6 +81,7 @@ ANNpoint		ANNkdQ;					// query point
 double			ANNkdMaxErr;			// max tolerable squared error
 ANNpointArray	ANNkdPts;				// the points
 ANNmin_k		*ANNkdPointMK;			// set of k closest points
+ANNbool			*ANNkdDeleted;			// deletion flags
 
 //----------------------------------------------------------------------
 //	annkSearch - search for the k nearest neighbors
@@ -97,10 +98,13 @@ void ANNkd_tree::annkSearch(
 	ANNkdDim = dim;						// copy arguments to static equivs
 	ANNkdQ = q;
 	ANNkdPts = pts;
+	ANNkdDeleted = deleted;				// copy deletion flags
 	ANNptsVisited = 0;					// initialize count of points visited
 
-	if (k > n_pts) {					// too many near neighbors?
-		annError("Requesting more near neighbors than data points", ANNabort);
+	// Check if k is larger than the number of non-deleted points
+	int non_deleted = n_pts - n_deleted;
+	if (k > non_deleted) {					// too many near neighbors?
+		annError("Requesting more near neighbors than non-deleted data points", ANNabort);
 	}
 
 	ANNkdMaxErr = ANN_POW(1.0 + eps);
@@ -181,6 +185,11 @@ void ANNkd_leaf::ann_search(ANNdist box_dist)
 	min_dist = ANNkdPointMK->max_key(); // k-th smallest distance so far
 
 	for (int i = 0; i < n_pts; i++) {	// check points in bucket
+
+		// Skip deleted points
+		if (ANNkdDeleted != NULL && ANNkdDeleted[bkt[i]]) {
+			continue;
+		}
 
 		pp = ANNkdPts[bkt[i]];			// first coord of next data point
 		qq = ANNkdQ;					// first coord of query point
