@@ -326,12 +326,12 @@ std::vector<std::pair<int, int>> multifragment(ANNpointArray pts, int numPts, in
         }
         iteration++;
 
-        // Stack stores cluster IDs forming a nearest-neighbor chain
-        std::vector<int> stack;
+        // Stack stores pairs of cluster IDs forming edges in the nearest-neighbor chain
+        // Each pair (u, v) represents "u's nearest neighbor is v"
+        std::vector<std::pair<int, int>> stack;
 
-        // Start with an arbitrary cluster
+        // Start with an arbitrary cluster (single node, so pair is (cluster, cluster))
         int currentCluster = *active.begin();
-        stack.push_back(currentCluster);
 
         // Build the nearest-neighbor chain until we find a cycle
         while (true) {
@@ -344,9 +344,10 @@ std::vector<std::pair<int, int>> multifragment(ANNpointArray pts, int numPts, in
             }
 
             // Check if nearestCluster is already in the stack (found a cycle)
+            // We check if nearestCluster appears in any pair in the stack
             bool foundCycle = false;
-            for (int clusterInStack : stack) {
-                if (clusterInStack == nearestCluster) {
+            for (const auto& pair : stack) {
+                if (pair.first == nearestCluster || pair.second == nearestCluster) {
                     foundCycle = true;
                     break;
                 }
@@ -366,8 +367,8 @@ std::vector<std::pair<int, int>> multifragment(ANNpointArray pts, int numPts, in
                 nextId++;
                 break;  // Start a new chain
             } else {
-                // Continue the chain
-                stack.push_back(nearestCluster);
+                // Continue the chain: add the edge (currentCluster -> nearestCluster)
+                stack.push_back({currentCluster, nearestCluster});
                 currentCluster = nearestCluster;
             }
         }
